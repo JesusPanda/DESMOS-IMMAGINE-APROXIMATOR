@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Convert any image into mathematical Desmos equations using edge detection and curve fitting. Generates sketch-like parametric curves, circles, and Bezier equations.">
+
+  <title>Desmos Image Approximator — Image to Math Equations</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="css/style.css">
+
+  <!-- Desmos API (free for personal/educational use) -->
+  <script src="https://www.desmos.com/api/v1.11/calculator.js?apiKey=dcb31709b452b1cf9dc26972add0fda6"></script>
+
+  <!-- OpenCV.js (WebAssembly build) -->
+  <script>
+    // Set up OpenCV ready callback BEFORE loading the script
+    var Module = {
+      onRuntimeInitialized: function() {
+        console.log('[OpenCV] Runtime initialized');
+        if (window.onOpenCVReady) window.onOpenCVReady();
+      }
+    };
+  </script>
+  <script async src="https://docs.opencv.org/4.x/opencv.js" type="text/javascript"></script>
+</head>
+<body>
+
+  <!-- Loading overlay (shown while OpenCV loads) -->
+  <div class="loading-overlay" id="loading-overlay">
+    <div class="loading-spinner"></div>
+    <div class="loading-text">Loading OpenCV.js Engine...</div>
+  </div>
+
+  <div id="app">
+
+    <!-- ===== HEADER ===== -->
+    <header class="header">
+      <div class="header__brand">
+        <div class="header__icon">📐</div>
+        <div>
+          <div class="header__title">Desmos Image Approximator</div>
+          <div class="header__subtitle">Image → Mathematical Curves</div>
+        </div>
+      </div>
+      <div class="header__status">
+        <span class="header__status-dot" id="status-dot"></span>
+        <span id="status-text">Loading Engine...</span>
+      </div>
+    </header>
+
+    <!-- ===== MAIN CONTENT ===== -->
+    <main class="main-grid">
+
+      <!-- LEFT PANEL: Controls -->
+      <aside class="panel-left">
+
+        <!-- Upload -->
+        <div class="card">
+          <div class="card__title">
+            <span class="card__title-icon">🖼️</span> Image Input
+          </div>
+          <div class="upload-zone" id="upload-zone">
+            <div class="upload-zone__icon">📷</div>
+            <div class="upload-zone__text">Drop image here or click to upload</div>
+            <div class="upload-zone__hint">Supports PNG, JPG, WebP · Paste from clipboard</div>
+            <img class="upload-zone__preview" id="upload-preview" alt="Preview">
+          </div>
+          <input type="file" id="file-input" accept="image/*">
+        </div>
+
+        <!-- Mode Selector -->
+        <div class="card">
+          <div class="card__title">
+            <span class="card__title-icon">🔀</span> Mode
+          </div>
+          <div class="mode-selector" id="mode-selector">
+            <button class="mode-btn active" data-mode="auto">🔄 Auto Trace</button>
+            <button class="mode-btn" data-mode="regression">📈 Regression</button>
+          </div>
+        </div>
+
+        <!-- Auto Trace Settings -->
+        <div id="auto-settings">
+
+        <!-- Precision Slider -->
+        <div class="card">
+          <div class="card__title">
+            <span class="card__title-icon">🎚️</span> Detail Level
+          </div>
+          <div class="slider-section">
+            <div class="slider-header">
+              <span style="font-size: 0.82rem; color: var(--text-secondary);">Precision</span>
+              <span class="slider-value" id="precision-value">50</span>
+            </div>
+            <div class="slider-container">
+              <div class="slider-track-bg"></div>
+              <input type="range" id="precision-slider" min="0" max="100" value="50" step="1">
+            </div>
+            <div class="slider-labels">
+              <span class="slider-label">
+                <span class="slider-label__dot"></span> Outline
+              </span>
+              <span class="slider-label active">
+                <span class="slider-label__dot"></span> Standard
+              </span>
+              <span class="slider-label">
+                <span class="slider-label__dot"></span> Detailed
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Settings -->
+        <div class="card">
+          <div class="card__title">
+            <span class="card__title-icon">⚙️</span> Settings
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 0.85rem; color: var(--text-secondary);">
+              <input type="checkbox" id="toggle-bw" style="accent-color: var(--accent-purple); width: 16px; height: 16px;">
+              <span>B&W Filter (Remove Shadows)</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 0.85rem; color: var(--text-secondary);">
+              <input type="checkbox" id="toggle-curves" checked style="accent-color: var(--accent-purple); width: 16px; height: 16px;">
+              <span>Smooth Curves (Béziers)</span>
+            </label>
+          </div>
+        </div>
+        </div><!-- /auto-settings -->
+
+        <!-- Regression Settings (hidden by default) -->
+        <div class="card" id="regression-settings" style="display: none;">
+          <div class="card__title">
+            <span class="card__title-icon">📈</span> Regression Settings
+          </div>
+          <div class="slider-section">
+            <div class="slider-header">
+              <span style="font-size: 0.82rem; color: var(--text-secondary);">Precision</span>
+              <span class="slider-value" id="sample-value">50</span>
+            </div>
+            <div class="slider-container">
+              <div class="slider-track-bg"></div>
+              <input type="range" id="sample-slider" min="1" max="100" value="50" step="1">
+            </div>
+            <div class="slider-labels">
+              <span class="slider-label">
+                <span class="slider-label__dot"></span> Rough
+              </span>
+              <span class="slider-label active">
+                <span class="slider-label__dot"></span> Balanced
+              </span>
+              <span class="slider-label">
+                <span class="slider-label__dot"></span> Precise
+              </span>
+            </div>
+          </div>
+          <div class="slider-section" style="margin-top: 14px;">
+            <div class="slider-header">
+              <span style="font-size: 0.82rem; color: var(--text-secondary);">Fitting Tolerance</span>
+              <span class="slider-value" id="tolerance-value">50</span>
+            </div>
+            <div class="slider-container">
+              <div class="slider-track-bg"></div>
+              <input type="range" id="tolerance-slider" min="1" max="100" value="50" step="1">
+            </div>
+            <div class="slider-labels">
+               <span class="slider-label">
+                <span class="slider-label__dot"></span> Loose (Fewer curves)
+              </span>
+              <span class="slider-label">
+                <span class="slider-label__dot"></span> Exact
+              </span>
+            </div>
+          </div>
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 0.85rem; color: var(--text-secondary); margin-top: 14px;">
+            <input type="checkbox" id="toggle-bw-reg" style="accent-color: var(--accent-purple); width: 16px; height: 16px;">
+            <span>B&W Filter (Remove Shadows)</span>
+          </label>
+          <div style="margin-top: 12px; padding: 8px 12px; background: rgba(139,92,246,0.08); border-radius: 8px; font-size: 0.78rem; color: var(--text-secondary); line-height: 1.5;">
+            💡 <strong>Click</strong> on the image to add guide points.<br>
+            <strong>Right-click</strong> to remove a point.
+          </div>
+          <button class="btn-export" id="btn-clear-points" style="margin-top: 10px; width: 100%;">
+            🗑️ Clear Manual Points (<span id="manual-point-count">0</span>)
+          </button>
+        </div>
+
+        <!-- Process Button -->
+        <button class="btn-process" id="btn-process" disabled>
+          ⚡ Process Image
+        </button>
+
+        <!-- Progress -->
+        <div class="progress-section" id="progress-section">
+          <div class="progress-bar-track">
+            <div class="progress-bar-fill" id="progress-fill"></div>
+          </div>
+          <div class="progress-text" id="progress-text">Initializing...</div>
+        </div>
+
+        <!-- Stats -->
+        <div class="card" id="stats-card" style="display: none;">
+          <div class="card__title">
+            <span class="card__title-icon">📊</span> Results
+          </div>
+          <div class="stats-grid">
+            <div class="stat-item">
+              <div class="stat-item__value" id="stat-curves">0</div>
+              <div class="stat-item__label">Equations</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-item__value" id="stat-time">0s</div>
+              <div class="stat-item__label">Time</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-item__value" id="stat-circles">0</div>
+              <div class="stat-item__label" id="stat-circles-label">Circles</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-item__value" id="stat-beziers">0</div>
+              <div class="stat-item__label" id="stat-beziers-label">Béziers</div>
+            </div>
+          </div>
+        </div>
+
+      </aside>
+
+      <!-- RIGHT PANEL: Preview & Equations -->
+      <section class="panel-right">
+
+        <!-- View Tabs -->
+        <div class="view-tabs">
+          <button class="view-tab active" data-view="original">Original</button>
+          <button class="view-tab" data-view="edges">Edges</button>
+          <button class="view-tab" data-view="curves">Curves</button>
+          <button class="view-tab" data-view="desmos">Desmos</button>
+        </div>
+
+        <!-- Preview Area -->
+        <div class="card preview-container">
+          <div class="preview-placeholder" id="preview-placeholder">
+            <div class="preview-placeholder__icon">🎨</div>
+            <div class="preview-placeholder__text">Upload an image to begin</div>
+          </div>
+          <canvas id="preview-canvas" style="display: none;"></canvas>
+          <canvas id="edge-canvas" style="display: none;"></canvas>
+          <canvas id="curve-canvas" style="display: none;"></canvas>
+          <div id="desmos-container">
+            <div id="desmos-calculator" style="width: 100%; height: 100%;"></div>
+          </div>
+        </div>
+
+        <!-- Equations List -->
+        <div class="card">
+          <div class="card__title">
+            <span class="card__title-icon">∑</span> Equations
+          </div>
+          <div class="equations-panel" id="equations-panel">
+            <div class="equations-empty">Process an image to generate equations</div>
+          </div>
+        </div>
+
+        <!-- Export Actions -->
+        <div class="export-actions">
+          <button class="btn-export" id="btn-copy-all" disabled>
+            📋 Copy All
+          </button>
+          <button class="btn-export" id="btn-download" disabled>
+            💾 Download .txt
+          </button>
+          <button class="btn-export" id="btn-open-desmos" disabled>
+            🔗 Open Desmos
+          </button>
+        </div>
+
+      </section>
+
+    </main>
+
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast"></div>
+
+  <!-- Scripts (order matters: dependencies first) -->
+  <script src="js/curve-fitter.js"></script>
+  <script src="js/regression-fitter.js"></script>
+  <script src="js/desmos-export.js"></script>
+  <script src="js/image-processor.js"></script>
+  <script src="js/app.js"></script>
+
+</body>
+</html>
