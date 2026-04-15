@@ -76,6 +76,9 @@ const App = (() => {
     dom.statusText = document.getElementById('status-text');
     dom.sliderLabels = document.querySelectorAll('.slider-label');
     dom.statsCard = document.getElementById('stats-card');
+    dom.optimizeCard = document.getElementById('optimize-card');
+    dom.btnDeduplicate = document.getElementById('btn-deduplicate');
+    dom.overlapThreshold = document.getElementById('overlap-threshold');
     dom.loadingOverlay = document.getElementById('loading-overlay');
     dom.toggleBw = document.getElementById('toggle-bw');
     dom.toggleCurves = document.getElementById('toggle-curves');
@@ -119,6 +122,11 @@ const App = (() => {
     dom.btnCopyAll.addEventListener('click', copyAllEquations);
     dom.btnDownload.addEventListener('click', downloadEquations);
     dom.btnOpenDesmos.addEventListener('click', openInDesmos);
+
+    // Optimization
+    if (dom.btnDeduplicate) {
+      dom.btnDeduplicate.addEventListener('click', handleDeduplicate);
+    }
 
     // Paste support
     document.addEventListener('paste', handlePaste);
@@ -491,6 +499,7 @@ const App = (() => {
     dom.statCircles.textContent = circles + ellipses;
     dom.statBeziers.textContent = beziers + lines;
     dom.statsCard.style.display = 'block';
+    if (dom.optimizeCard) dom.optimizeCard.style.display = 'block';
 
     // Populate equations list
     populateEquations(state.equations);
@@ -661,6 +670,7 @@ const App = (() => {
     dom.statCircles.textContent = avgR2.toFixed(2);
     dom.statBeziers.textContent = allSampled.length;
     dom.statsCard.style.display = 'block';
+    if (dom.optimizeCard) dom.optimizeCard.style.display = 'block';
 
     // Populate equations + Desmos
     populateEquations(equations);
@@ -755,6 +765,7 @@ const App = (() => {
     state.regressionFits = [];
     state.sampledGroups = [];
     dom.statsCard.style.display = 'none';
+    if (dom.optimizeCard) dom.optimizeCard.style.display = 'none';
     dom.equationsPanel.innerHTML = '<div class="equations-empty">Process an image to generate equations</div>';
     dom.btnCopyAll.disabled = true;
     dom.btnDownload.disabled = true;
@@ -967,6 +978,170 @@ const App = (() => {
     toastTimeout = setTimeout(() => {
       dom.toast.classList.remove('visible');
     }, 3000);
+  }
+
+  // =========================================================
+  //  Deduplication / Optimization
+  // =========================================================
+
+  async function handleDeduplicate() {
+    const isReg = state.mode === 'regression';
+    if (!state.results && !state.regressionFits.length) return;
+
+    dom.btnDeduplicate.disabled = true;
+    dom.btnDeduplicate.innerHTML = 'Removing...';
+    await yieldToUI();
+
+    const threshold = parseInt(dom.overlapThreshold.value) || 15;
+    
+    // Sort items by quality (best fits first)
+    let items = isReg ? [...state.regressionFits] : [...state.results.allShapes];
+
+    if (isReg) {
+      // higher rSquared is better
+      items.sort((a, b) => b.rSquared - a.rSquared);
+    } else {
+      // sort by shape proxy "goodness": length or error inverse
+      const getScore = (s) => {
+         if (s.type === 'circle' || s.type === 'ellipse') return 1000 - (s.error || 0) * 1000;
+         if (s.type === 'line') return Math.hypot(s.x2 - s.x1, s.y2 - s.y1);
+         if (s.type === 'bezier') return Math.hypot(s.p1.x - s.p0.x, s.p1.y - s.p0.y) + Math.hypot(s.p2.x - s.p1.x, s.p2.y - s.p1.y) + Math.hypot(s.p3.x - s.p2.x, s.p3.y - s.p2.y);
+         return 0;
+      };
+      items.sort((a, b) => getScore(b) - getScore(a));
+    }
+
+    const tx = DesmosExport.createTransformer(state.results.width, state.results.height);
+
+    // Helper to sample shape into pixels
+    function sampleItem(item) {
+       const pts = [];
+       if (isReg) {
+          const ptCount = 300;
+          let lastX = null, lastY = null;
+          const isVert = item.orientation === 'vertical';
+          for (let s = 0; s <= ptCount; s++) {
+            const t = s / ptCount;
+            const indep = item.domainMin + t * (item.domainMax - item.domainMin);
+            const dep = RegressionFitter.evaluate(item, indep);
+            const imgX = isVert ? tx.invX(dep) : tx.invX(indep);
+            const imgY = isVert ? tx.invY(indep) : tx.invY(dep);
+            if (lastX !== null) {
+              const dist = Math.hypot(imgX - lastX, imgY - lastY);
+              const steps = Math.ceil(dist);
+              for (let k = 1; k <= steps; k++) {
+                 pts.push({ x: lastX + (imgX - lastX) * k / steps, y: lastY + (imgY - lastY) * k / steps });
+              }
+            } else {
+              pts.push({x: imgX, y: imgY});
+            }
+            lastX = imgX; lastY = imgY;
+          }
+       } else {
+          const shape = item;
+          if (shape.type === 'line') {
+             const dist = Math.hypot(shape.x2 - shape.x1, shape.y2 - shape.y1);
+             const steps = Math.ceil(dist);
+             for (let k = 0; k <= steps; k++) pts.push({ x: shape.x1 + (shape.x2 - shape.x1) * k / steps, y: shape.y1 + (shape.y2 - shape.y1) * k / steps });
+          } else if (shape.type === 'bezier') {
+             const len = Math.hypot(shape.p1.x - shape.p0.x, shape.p1.y - shape.p0.y) + Math.hypot(shape.p2.x - shape.p1.x, shape.p2.y - shape.p1.y) + Math.hypot(shape.p3.x - shape.p2.x, shape.p3.y - shape.p2.y);
+             const steps = Math.ceil(len);
+             for (let k = 0; k <= steps; k++) pts.push(CurveFitter.bezierPoint(shape.p0, shape.p1, shape.p2, shape.p3, k / steps));
+          } else if (shape.type === 'circle') {
+             const steps = Math.ceil(2 * Math.PI * shape.r);
+             for (let k = 0; k < steps; k++) pts.push({x: shape.cx + shape.r * Math.cos(k * 2 * Math.PI / steps), y: shape.cy + shape.r * Math.sin(k * 2 * Math.PI / steps)});
+          } else if (shape.type === 'ellipse') {
+             const steps = Math.ceil(Math.PI * (shape.a + shape.b));
+             const cosA = Math.cos(shape.angle), sinA = Math.sin(shape.angle);
+             for (let k = 0; k < steps; k++) {
+                const t = k * 2 * Math.PI / steps;
+                const rx = shape.a * Math.cos(t), ry = shape.b * Math.sin(t);
+                pts.push({ x: shape.cx + rx * cosA - ry * sinA, y: shape.cy + rx * sinA + ry * cosA });
+             }
+          }
+       }
+       return pts;
+    }
+
+    const kept = [];
+    const cellSize = 2; // 2px radius for overlap neighborhood
+
+    for (let item of items) {
+       const pts1 = sampleItem(item);
+       let overlapped = false;
+
+       // Check against already kept (better) items
+       for (let kItem of kept) {
+         const grid = kItem._grid;
+         let overlapCount = 0;
+         for (let p1 of pts1) {
+            const gx = Math.floor(p1.x / cellSize);
+            const gy = Math.floor(p1.y / cellSize);
+            // Check 3x3 neighborhood in spatial hash
+            if (grid.has(`${gx},${gy}`) || grid.has(`${gx-1},${gy}`) || grid.has(`${gx+1},${gy}`) || 
+                grid.has(`${gx},${gy-1}`) || grid.has(`${gx},${gy+1}`) || grid.has(`${gx-1},${gy-1}`) || 
+                grid.has(`${gx+1},${gy-1}`) || grid.has(`${gx-1},${gy+1}`) || grid.has(`${gx+1},${gy+1}`)) {
+               overlapCount++;
+            }
+         }
+         
+         if (overlapCount >= threshold) {
+            overlapped = true;
+            break;
+         }
+       }
+       
+       if (!overlapped) {
+          // Add to kept, build spatial hash
+          const grid = new Set();
+          for (let p of pts1) {
+             grid.add(`${Math.floor(p.x / cellSize)},${Math.floor(p.y / cellSize)}`);
+          }
+          item._grid = grid;
+          kept.push(item);
+       }
+    }
+
+    // Clean up temporary grids
+    kept.forEach(k => delete k._grid);
+
+    const oldLength = items.length;
+    const removedCount = oldLength - kept.length;
+
+    // Update state and UI
+    if (isReg) {
+      state.regressionFits = kept;
+      state.equations = kept.map(f => DesmosExport.regressionToDesmos(f));
+      
+      const allPts = state.sampledGroups || state.manualPoints || []; 
+      drawRegressionResults(allPts, kept, tx, state.results.width, state.results.height);
+
+      const avgR2 = kept.length > 0 ? (kept.reduce((s, f) => s + f.rSquared, 0) / kept.length) : 0;
+      dom.statCurves.textContent = state.equations.length;
+      dom.statCircles.textContent = avgR2.toFixed(2);
+      
+      loadDesmosRegression(state.equations);
+
+    } else {
+      state.results.allShapes = kept;
+      const exportResult = DesmosExport.exportAll(kept, state.results.width, state.results.height);
+      state.equations = exportResult.equations;
+      
+      ImageProcessor.drawShapesOverlay(kept, dom.curveCanvas, state.results.width, state.results.height);
+      
+      const circles = kept.filter(s => s.type === 'circle' || s.type === 'ellipse').length;
+      const beziers = kept.filter(s => s.type === 'bezier' || s.type === 'line').length;
+      dom.statCurves.textContent = state.equations.length;
+      dom.statCircles.textContent = circles;
+      dom.statBeziers.textContent = beziers;
+      loadDesmos(state.equations);
+    }
+
+    populateEquations(state.equations);
+    showToast(`Removed ${removedCount} overlapping lines.`);
+
+    dom.btnDeduplicate.disabled = false;
+    dom.btnDeduplicate.innerHTML = '🔪 Remove Overlapping Lines';
   }
 
   // =========================================================

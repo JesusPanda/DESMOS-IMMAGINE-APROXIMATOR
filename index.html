@@ -197,6 +197,23 @@
           ⚡ Process Image
         </button>
 
+        <!-- Post-Processing Optimize Card -->
+        <div class="card" id="optimize-card" style="display: none;">
+          <div class="card__title">
+            <span class="card__title-icon">🧹</span> Deduplicate / Optimize
+          </div>
+          <div style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 10px;">
+            Removes overlapping lines that coincide in the same points.
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+            <label style="font-size: 0.82rem; color: var(--text-secondary);">Overlap Threshold (pts):</label>
+            <input type="number" id="overlap-threshold" value="15" min="1" max="500" style="width: 60px; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.2); color: white;">
+          </div>
+          <button class="btn-export" id="btn-deduplicate" style="width: 100%; border: 1px solid var(--accent-cyan); color: var(--accent-cyan);">
+            🔪 Remove Overlapping Lines
+          </button>
+        </div>
+
         <!-- Progress -->
         <div class="progress-section" id="progress-section">
           <div class="progress-bar-track">
